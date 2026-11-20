@@ -32,6 +32,9 @@ services:
       COOKIE_SECRET: ${COOKIE_SECRET:-change-me-secret}
     ports:
       - "${PORT:-3000}:3000"
+    networks:
+      - default
+      - proxy_network
 
 volumes:
   pgdata:
