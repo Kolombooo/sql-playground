@@ -38,3 +38,7 @@ services:
 
 volumes:
   pgdata:
+
+networks:
+  proxy_network:
+    external: true
