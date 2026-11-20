@@ -30,6 +30,8 @@ services:
       APP_PASSWORD: ${APP_PASSWORD:-sqlrocks}
       # Used to sign the login cookie and derive per-database role passwords.
       COOKIE_SECRET: ${COOKIE_SECRET:-change-me-secret}
+      # Max simultaneous database jobs; extra requests wait in a queue.
+      MAX_CONCURRENT: ${MAX_CONCURRENT:-8}
     ports:
       - "${PORT:-3000}:3000"
 

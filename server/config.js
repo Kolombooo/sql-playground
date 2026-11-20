@@ -3,6 +3,9 @@ import crypto from "node:crypto";
 export const DB_COUNT = 50;
 export const APP_PASSWORD = process.env.APP_PASSWORD || "sqlrocks";
 export const COOKIE_SECRET = process.env.COOKIE_SECRET || "change-me-secret";
+// Max simultaneous database jobs; further requests wait in a FIFO queue.
+export const MAX_CONCURRENT = Number(process.env.MAX_CONCURRENT || 8);
+export const MAX_QUEUE = Number(process.env.MAX_QUEUE || 200);
 export const PORT = Number(process.env.PORT || 3000);
 
 export const PG = {

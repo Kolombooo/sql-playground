@@ -19,6 +19,56 @@ const el = (tag, cls, text) => {
   return e;
 };
 
+// ---------- SQL syntax highlighting ----------
+// A coloured <pre> sits behind a transparent <textarea>. Only colours are used (no bold/italic)
+// so both layers keep identical glyph widths.
+const KEYWORDS = new Set(`select from where group by order having limit offset distinct as on using join inner left right full outer cross natural
+  union all intersect except insert into values update set delete create table drop alter add column constraint primary key foreign references
+  unique check default index view with recursive and or not in is null like ilike between exists any some case when then else end asc desc
+  returning begin commit rollback truncate if cascade restrict true false fetch first next rows only over partition window filter lateral
+  grant revoke explain analyze schema database`.split(/\s+/));
+const TYPES = new Set(`int integer bigint smallint serial bigserial text varchar char character varying boolean bool date time timestamp timestamptz
+  interval numeric decimal real double precision float json jsonb uuid bytea`.split(/\s+/));
+const TOKEN = /(--[^\n]*|\/\*[\s\S]*?(?:\*\/|$))|('(?:[^']|'')*'?)|("(?:[^"]|"")*"?)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_][A-Za-z0-9_$]*)|(<>|<=|>=|!=|\|\||::|[-+*\/%=<>])/g;
+const known = { tables: new Set(), columns: new Set() };
+const esc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const span = (cls, t) => `<span class="${cls}">${esc(t)}</span>`;
+
+function highlight(src) {
+  let out = "";
+  let last = 0;
+  for (const m of src.matchAll(TOKEN)) {
+    out += esc(src.slice(last, m.index));
+    last = m.index + m[0].length;
+    const [t, comment, str, quoted, num, word, op] = m;
+    if (comment) out += span("text-slate-400", t);
+    else if (str) out += span("text-emerald-600", t);
+    else if (quoted) out += span("text-amber-700", t);
+    else if (num) out += span("text-orange-500", t);
+    else if (op) out += span("text-pink-600", t);
+    else if (word) {
+      const w = word.toLowerCase();
+      const isCall = /^\s*\(/.test(src.slice(last, last + 20));
+      if (KEYWORDS.has(w)) out += span("text-indigo-600", t);
+      else if (known.tables.has(w)) out += span("text-purple-700", t);
+      else if (known.columns.has(w)) out += span("text-cyan-700", t);
+      else if (isCall) out += span("text-sky-600", t);
+      else if (TYPES.has(w)) out += span("text-teal-600", t);
+      else out += esc(t);
+    } else out += esc(t);
+  }
+  return out + esc(src.slice(last));
+}
+
+const hlBox = $("hl");
+function paint() {
+  hlBox.innerHTML = highlight(sqlBox.value) + "\n ";
+  hlBox.scrollTop = sqlBox.scrollTop;
+  hlBox.scrollLeft = sqlBox.scrollLeft;
+}
+sqlBox.addEventListener("input", paint);
+sqlBox.addEventListener("scroll", () => { hlBox.scrollTop = sqlBox.scrollTop; hlBox.scrollLeft = sqlBox.scrollLeft; });
+
 // ---------- structure sidebar ----------
 async function loadSchema() {
   const box = $("schema");
@@ -26,6 +76,9 @@ async function loadSchema() {
   box.replaceChildren();
   if (!ok) return box.append(el("p", "text-red-600", data.error || "Could not load structure."));
   if (!data.tables.length) return box.append(el("p", "text-slate-500", "No tables yet."));
+  known.tables = new Set(data.tables.map((t) => t.name.toLowerCase()));
+  known.columns = new Set(data.tables.flatMap((t) => t.columns.map((c) => c.name.toLowerCase())));
+  paint();
   for (const t of data.tables) {
     const d = el("details", "rounded border border-slate-200");
     const s = el("summary", "cursor-pointer select-none px-2 py-1.5 flex items-center justify-between bg-slate-50 hover:bg-slate-100");
@@ -80,18 +133,34 @@ function renderResult(r) {
 
 async function run() {
   const sql = sqlBox.value;
-  if (!sql.trim()) return;
+  if (!sql.trim() || $("run").disabled) return;
   $("run").disabled = true;
   $("status").textContent = "Running…";
+  const ticket = crypto.randomUUID();
+  // While the request waits for a free slot, show the student their place in the queue.
+  const poll = setInterval(async () => {
+    try {
+      const q = await (await fetch(`/api/queue/${ticket}`)).json();
+      if (q.state === "queued") {
+        $("status").textContent = `Server busy: you are #${q.position} in the queue (about ${Math.max(1, Math.round(q.estimateMs / 1000))} s)…`;
+      }
+    } catch {}
+  }, 700);
   const out = $("output");
-  const { ok, data } = await api("/api/query", { sql });
+  let ok, data;
+  try {
+    ({ ok, data } = await api("/api/query", { sql, ticket }));
+  } finally {
+    clearInterval(poll);
+  }
   out.replaceChildren();
+  const waited = data.queue ? ` · waited ${(data.queue.waitedMs / 1000).toFixed(1)} s in queue` : "";
   if (!ok) {
     out.append(el("pre", "bg-red-50 border border-red-200 text-red-800 rounded-lg p-3 text-sm whitespace-pre-wrap font-mono", data.error || "Error"));
-    $("status").textContent = data.ms != null ? `Failed after ${data.ms} ms` : "";
+    $("status").textContent = (data.ms != null ? `Failed after ${data.ms} ms` : "Failed") + waited;
   } else {
     data.results.forEach((r) => out.append(renderResult(r)));
-    $("status").textContent = `Done in ${data.ms} ms`;
+    $("status").textContent = `Done in ${data.ms} ms${waited}`;
     loadSchema(); // structure / row counts may have changed
   }
   $("run").disabled = false;
@@ -106,6 +175,7 @@ sqlBox.addEventListener("keydown", (e) => {
     e.preventDefault();
     const { selectionStart: s, selectionEnd: en } = sqlBox;
     sqlBox.setRangeText("  ", s, en, "end");
+    paint();
   }
 });
 $("refresh").addEventListener("click", loadSchema);
@@ -122,5 +192,6 @@ $("reset").addEventListener("click", async () => {
   const { data } = await api("/api/me");
   $("dbname").textContent = data.database;
   try { sqlBox.value = localStorage.getItem("lastSql") || ""; } catch {}
+  paint();
   loadSchema();
 })();

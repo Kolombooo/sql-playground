@@ -6,7 +6,7 @@ import { DB_COUNT, PG, dbName, rolePassword } from "./config.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const seedSql = fs.readFileSync(path.join(here, "../db/seed.sql"), "utf8");
-const SEED_MARKER = "seeded";
+const SEED_MARKER = "school-v1"; // bump to rebuild all databases on next start
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const lit = (s) => `'${String(s).replace(/'/g, "''")}'`; // only used for generated values
@@ -34,13 +34,12 @@ export function studentConfig(n) {
   };
 }
 
-export async function seedDatabase(n) {
-  await withClient(studentConfig(n), (c) => c.query(seedSql));
-}
+// Seeding is heavier than student queries: no statement/query timeout.
+const seedConfig = (n) => ({ ...studentConfig(n), statement_timeout: 0, query_timeout: 0 });
 
 export async function resetDatabase(n) {
-  await withClient(studentConfig(n), async (c) => {
-    await c.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+  await withClient(seedConfig(n), async (c) => {
+    await c.query("SET statement_timeout = 0; DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
     await c.query(seedSql);
   });
 }
@@ -59,6 +58,7 @@ async function waitForPostgres() {
 
 export async function provision() {
   await waitForPostgres();
+  const todo = [];
   await withClient({ ...PG, database: "postgres" }, async (admin) => {
     for (let n = 1; n <= DB_COUNT; n++) {
       const name = dbName(n);
@@ -83,12 +83,18 @@ export async function provision() {
         "SELECT shobj_description(oid, 'pg_database') AS c FROM pg_database WHERE datname = $1",
         [name],
       );
-      if (marker.rows[0].c !== SEED_MARKER) {
-        await seedDatabase(n);
-        await admin.query(`COMMENT ON DATABASE ${name} IS '${SEED_MARKER}'`);
-        console.log(`Created and seeded ${name}`);
-      }
+      if (marker.rows[0].c !== SEED_MARKER) todo.push(n);
     }
+    // Seed in parallel (a few at a time).
+    const workers = Array.from({ length: 6 }, async () => {
+      while (todo.length) {
+        const n = todo.shift();
+        await resetDatabase(n);
+        await admin.query(`COMMENT ON DATABASE ${dbName(n)} IS '${SEED_MARKER}'`);
+        console.log(`Seeded ${dbName(n)}`);
+      }
+    });
+    await Promise.all(workers);
   });
   console.log(`All ${DB_COUNT} playground databases are ready.`);
 }

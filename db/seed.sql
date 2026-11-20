@@ -1,113 +1,132 @@
--- Sample data loaded into every playgroundX database (small "shop" schema).
+-- School sample data loaded into every playgroundX database.
+--   11 subjects, 15 teachers, 200 students (8 classes), 176 lessons,
+--   8,800 grades, 22,000 attendance rows.
+-- Foreign keys are added after the bulk load to keep seeding fast.
+SET statement_timeout = 0;
+SELECT setseed(0.42);
 
-CREATE TABLE departments (
-  id         serial PRIMARY KEY,
-  name       text NOT NULL,
-  location   text NOT NULL
+CREATE TABLE subjects (
+  id            integer PRIMARY KEY,
+  name          text NOT NULL,
+  weekly_hours  integer NOT NULL
 );
 
-CREATE TABLE employees (
-  id            serial PRIMARY KEY,
-  first_name    text NOT NULL,
-  last_name     text NOT NULL,
-  email         text UNIQUE NOT NULL,
-  department_id integer REFERENCES departments(id),
-  manager_id    integer REFERENCES employees(id),
-  salary        numeric(10,2) NOT NULL,
-  hired_on      date NOT NULL
+CREATE TABLE teachers (
+  id          integer PRIMARY KEY,
+  first_name  text NOT NULL,
+  last_name   text NOT NULL,
+  email       text NOT NULL,
+  subject_id  integer NOT NULL,   -- main subject
+  hired_on    date NOT NULL
 );
 
-CREATE TABLE customers (
-  id         serial PRIMARY KEY,
-  name       text NOT NULL,
-  email      text UNIQUE NOT NULL,
-  country    text NOT NULL,
-  created_at timestamp NOT NULL
+CREATE TABLE students (
+  id             integer PRIMARY KEY,
+  first_name     text NOT NULL,
+  last_name      text NOT NULL,
+  class_name     text NOT NULL,
+  date_of_birth  date NOT NULL,
+  email          text NOT NULL
 );
 
-CREATE TABLE products (
-  id       serial PRIMARY KEY,
-  name     text NOT NULL,
-  category text NOT NULL,
-  price    numeric(8,2) NOT NULL,
-  in_stock integer NOT NULL
+CREATE TABLE lessons (
+  id          integer PRIMARY KEY,
+  subject_id  integer NOT NULL,
+  teacher_id  integer NOT NULL,
+  class_name  text NOT NULL,
+  weekday     integer NOT NULL,   -- 1 = Monday ... 5 = Friday
+  period      integer NOT NULL,   -- 1..6
+  room        text NOT NULL
 );
 
-CREATE TABLE orders (
-  id          serial PRIMARY KEY,
-  customer_id integer NOT NULL REFERENCES customers(id),
-  employee_id integer REFERENCES employees(id),
-  ordered_at  timestamp NOT NULL,
-  status      text NOT NULL
+CREATE TABLE grades (
+  id          integer PRIMARY KEY,
+  student_id  integer NOT NULL,
+  lesson_id   integer NOT NULL,
+  grade       integer NOT NULL,   -- 1 (best) .. 6 (worst)
+  kind        text NOT NULL,      -- test / homework / oral
+  graded_on   date NOT NULL
 );
 
-CREATE TABLE order_items (
-  id         serial PRIMARY KEY,
-  order_id   integer NOT NULL REFERENCES orders(id),
-  product_id integer NOT NULL REFERENCES products(id),
-  quantity   integer NOT NULL,
-  unit_price numeric(8,2) NOT NULL
+CREATE TABLE attendance (
+  id               integer PRIMARY KEY,
+  student_id       integer NOT NULL,
+  lesson_id        integer NOT NULL,
+  attendance_date  date NOT NULL,
+  status           text NOT NULL  -- present / late / absent / excused
 );
 
-INSERT INTO departments (name, location) VALUES
-  ('Sales',       'Berlin'),
-  ('Engineering', 'Amsterdam'),
-  ('Support',     'Dublin'),
-  ('Marketing',   'Paris'),
-  ('Finance',     'Vienna');
+INSERT INTO subjects (id, name, weekly_hours) VALUES
+  (1,'Mathematics',4),(2,'German',4),(3,'English',3),(4,'Physics',2),
+  (5,'Chemistry',2),(6,'Biology',2),(7,'History',2),(8,'Geography',2),
+  (9,'Art',1),(10,'Music',1),(11,'Physical Education',2);
 
--- 30 employees; the first 5 are managers (no manager themselves)
-INSERT INTO employees (first_name, last_name, email, department_id, manager_id, salary, hired_on)
-SELECT
-  (ARRAY['Anna','Ben','Clara','David','Eva','Felix','Greta','Hugo','Ines','Jan','Katja','Leo','Mia','Noah','Olivia','Paul','Quinn','Rosa','Sam','Tina'])[1 + (g * 7) % 20],
-  (ARRAY['Schmidt','Meyer','Fischer','Weber','Wagner','Becker','Hoffmann','Koch','Richter','Klein','Wolf','Neumann'])[1 + (g * 5) % 12],
-  'employee' || g || '@example.com',
-  1 + (g % 5),
-  CASE WHEN g <= 5 THEN NULL ELSE 1 + (g % 5) END,
-  round((38000 + (g * 2371) % 52000 + CASE WHEN g <= 5 THEN 30000 ELSE 0 END)::numeric, 2),
-  DATE '2015-01-01' + ((g * 97) % 3000)
-FROM generate_series(1, 30) AS g;
+-- teachers 1..11 teach subject = id; teachers 12..15 teach subjects 1..4 as well
+INSERT INTO teachers (id, first_name, last_name, email, subject_id, hired_on)
+SELECT g,
+  (ARRAY['Anna','Ben','Clara','David','Eva','Felix','Greta','Hugo','Ines','Jan','Katja','Leo','Mia','Noah','Olivia'])[g],
+  (ARRAY['Schmidt','Meyer','Fischer','Weber','Wagner','Becker','Hoffmann','Koch','Richter','Klein','Wolf','Neumann','Schwarz','Zimmermann','Braun'])[g],
+  'teacher' || g || '@school.example',
+  CASE WHEN g <= 11 THEN g ELSE g - 11 END,
+  DATE '2005-08-01' + (g * 331) % 6000
+FROM generate_series(1, 15) AS g;
 
--- 200 customers
-INSERT INTO customers (name, email, country, created_at)
-SELECT
-  (ARRAY['Alpha','Bravo','Cedar','Delta','Echo','Forge','Globe','Harbor','Iris','Jade'])[1 + g % 10]
-    || ' ' || (ARRAY['Trading','Systems','Foods','Labs','Studio','Logistics','Media','Works'])[1 + (g * 3) % 8]
-    || ' ' || g,
-  'contact' || g || '@customer.example',
-  (ARRAY['Germany','Austria','Netherlands','France','Ireland','Spain','Italy','Poland'])[1 + (g * 11) % 8],
-  TIMESTAMP '2022-01-01' + (g * 37 % 900) * INTERVAL '1 day' + (g * 13 % 24) * INTERVAL '1 hour'
+-- 200 students, 25 per class
+INSERT INTO students (id, first_name, last_name, class_name, date_of_birth, email)
+SELECT g,
+  (ARRAY['Lukas','Emma','Finn','Mia','Leon','Hannah','Paul','Sophie','Jonas','Lena','Elias','Marie','Noah','Lea','Ben','Anna','Tim','Laura','Max','Nele'])[1 + (g * 7) % 20],
+  (ARRAY['Müller','Schneider','Krüger','Lange','Schmitt','Hartmann','Krause','Lehmann','Schulz','Maier','Köhler','Herrmann','König','Walter','Peters'])[1 + (g * 11) % 15],
+  (ARRAY['5a','5b','6a','6b','7a','7b','8a','8b'])[1 + (g - 1) % 8],
+  DATE '2010-09-01' - (((1 + (g - 1) % 8) / 2) * 365) + ((g * 53) % 330),
+  'student' || g || '@school.example'
 FROM generate_series(1, 200) AS g;
 
-INSERT INTO products (name, category, price, in_stock) VALUES
-  ('Mechanical Keyboard', 'Electronics', 89.90, 120),
-  ('Wireless Mouse',      'Electronics', 29.50, 300),
-  ('USB-C Hub',           'Electronics', 45.00,  80),
-  ('27" Monitor',         'Electronics', 249.00, 40),
-  ('Desk Lamp',           'Home',        34.99,  75),
-  ('Office Chair',        'Home',       189.00,  25),
-  ('Standing Desk',       'Home',       399.00,  12),
-  ('Notebook A5',         'Stationery',   4.50, 900),
-  ('Gel Pen Set',         'Stationery',   7.80, 650),
-  ('Whiteboard',          'Stationery',  59.00,  30),
-  ('Coffee Beans 1kg',    'Food',        18.90, 200),
-  ('Green Tea Box',       'Food',         9.40, 340),
-  ('Protein Bars (12)',   'Food',        16.00, 150),
-  ('Backpack',            'Accessories', 64.00,  90),
-  ('Water Bottle',        'Accessories', 14.50, 410);
+-- 22 lessons per class (each subject twice a week): 8 x 22 = 176
+INSERT INTO lessons (id, subject_id, teacher_id, class_name, weekday, period, room)
+SELECT (c - 1) * 22 + k,
+  s,
+  CASE WHEN s <= 4 AND c % 2 = 0 THEN s + 11 ELSE s END,
+  (ARRAY['5a','5b','6a','6b','7a','7b','8a','8b'])[c],
+  1 + (k - 1) % 5,
+  1 + ((k - 1) / 5 + c) % 6,
+  'R' || (100 + c * 3 + s)
+FROM generate_series(1, 8) AS c
+CROSS JOIN generate_series(1, 22) AS k
+CROSS JOIN LATERAL (SELECT 1 + (k - 1) % 11 AS s) AS x;
 
--- 600 orders
-INSERT INTO orders (customer_id, employee_id, ordered_at, status)
-SELECT
-  1 + (g * 17) % 200,
-  CASE WHEN g % 10 = 0 THEN NULL ELSE 1 + (g * 3) % 30 END,
-  TIMESTAMP '2023-01-01' + (g * 53 % 700) * INTERVAL '1 day' + (g * 7 % 24) * INTERVAL '1 hour',
-  (ARRAY['pending','shipped','delivered','delivered','delivered','cancelled'])[1 + g % 6]
-FROM generate_series(1, 600) AS g;
+-- 2 grades per student per lesson of their class: 200 x 22 x 2 = 8,800
+INSERT INTO grades (id, student_id, lesson_id, grade, kind, graded_on)
+SELECT row_number() OVER (ORDER BY st.id, l.id, n),
+  st.id, l.id,
+  least(6, greatest(1, round(3.0 + ((st.id * 37) % 7 - 3) * 0.25 + (random() + random() + random() - 1.5) * 2)))::int,
+  (ARRAY['test','homework','oral'])[1 + (st.id + l.id + n) % 3],
+  DATE '2025-09-15' + ((st.id * 7 + l.id * 3 + n * 29) % 90)
+FROM students st
+JOIN lessons l ON l.class_name = st.class_name
+CROSS JOIN generate_series(1, 2) AS n;
 
--- 1-4 items per order
-INSERT INTO order_items (order_id, product_id, quantity, unit_price)
-SELECT o.id, p.id, 1 + (o.id + n) % 5, p.price
-FROM orders o
-CROSS JOIN LATERAL generate_series(1, 1 + o.id % 4) AS n
-JOIN products p ON p.id = 1 + (o.id * 3 + n * 5) % 15;
+-- 5 weeks of attendance per student per lesson: 200 x 22 x 5 = 22,000
+INSERT INTO attendance (id, student_id, lesson_id, attendance_date, status)
+SELECT row_number() OVER (ORDER BY st.id, l.id, w),
+  st.id, l.id,
+  DATE '2025-09-01' + (w - 1) * 7 + (l.weekday - 1),
+  CASE
+    WHEN r < 0.90 THEN 'present'
+    WHEN r < 0.95 THEN 'late'
+    WHEN r < 0.98 THEN 'excused'
+    ELSE 'absent'
+  END
+FROM students st
+JOIN lessons l ON l.class_name = st.class_name
+CROSS JOIN generate_series(1, 5) AS w
+CROSS JOIN LATERAL (SELECT random() AS r) AS rr;
+
+ALTER TABLE teachers   ADD FOREIGN KEY (subject_id) REFERENCES subjects(id);
+ALTER TABLE lessons    ADD FOREIGN KEY (subject_id) REFERENCES subjects(id);
+ALTER TABLE lessons    ADD FOREIGN KEY (teacher_id) REFERENCES teachers(id);
+ALTER TABLE grades     ADD FOREIGN KEY (student_id) REFERENCES students(id);
+ALTER TABLE grades     ADD FOREIGN KEY (lesson_id)  REFERENCES lessons(id);
+ALTER TABLE attendance ADD FOREIGN KEY (student_id) REFERENCES students(id);
+ALTER TABLE attendance ADD FOREIGN KEY (lesson_id)  REFERENCES lessons(id);
+
+ANALYZE;

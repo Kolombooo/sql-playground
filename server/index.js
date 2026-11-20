@@ -3,12 +3,23 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { APP_PASSWORD, DB_COUNT, PORT, dbName, sign } from "./config.js";
+import { APP_PASSWORD, DB_COUNT, MAX_CONCURRENT, MAX_QUEUE, PORT, dbName, sign } from "./config.js";
+import { AlreadyQueuedError, Limiter, QueueFullError } from "./limiter.js";
 import { provision, resetDatabase, studentConfig } from "./provision.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pub = path.join(here, "../public");
 const MAX_ROWS = 500;
+const limiter = new Limiter(MAX_CONCURRENT, MAX_QUEUE);
+
+const ticketOf = (req) =>
+  typeof req.body?.ticket === "string" && req.body.ticket.length <= 64 ? req.body.ticket : crypto.randomUUID();
+
+function queueError(e, res) {
+  if (e instanceof AlreadyQueuedError) return res.status(429).json({ error: e.message });
+  if (e instanceof QueueFullError) return res.status(503).json({ error: e.message });
+  return null;
+}
 
 // Return dates/timestamps as plain strings (no timezone shifting in the browser).
 for (const oid of [1082, 1114, 1184]) pg.types.setTypeParser(oid, (v) => v);
@@ -51,23 +62,24 @@ function requireDb(req, res, next) {
 }
 
 // ---------- login ----------
-const attempts = new Map();
-function tooManyAttempts(ip) {
-  const now = Date.now();
-  const list = (attempts.get(ip) || []).filter((t) => now - t < 60_000);
-  list.push(now);
-  attempts.set(ip, list);
-  return list.length > 10;
-}
+// Only FAILED logins count (a whole class often shares one IP address).
+const failures = new Map();
+const recentFailures = (ip) => {
+  const list = (failures.get(ip) || []).filter((t) => Date.now() - t < 60_000);
+  failures.set(ip, list);
+  return list;
+};
+const noteFailure = (ip) => recentFailures(ip).push(Date.now());
 
 app.post("/api/login", (req, res) => {
-  if (tooManyAttempts(req.ip)) return res.status(429).json({ error: "Too many attempts, wait a minute." });
+  if (recentFailures(req.ip).length >= 30) return res.status(429).json({ error: "Too many attempts, wait a minute." });
   const { password, number } = req.body || {};
   const n = Number(number);
   if (!Number.isInteger(n) || n < 1 || n > DB_COUNT) {
     return res.status(400).json({ error: `Choose a number between 1 and ${DB_COUNT}.` });
   }
   if (typeof password !== "string" || !safeEqual(password, APP_PASSWORD)) {
+    noteFailure(req.ip);
     return res.status(401).json({ error: "Wrong password." });
   }
   const maxAge = 30 * 24 * 3600;
@@ -105,7 +117,7 @@ app.get("/api/me", requireDb, (req, res) => {
 // Structure only: tables, columns, keys and a row count per table (never content).
 app.get("/api/schema", requireDb, async (req, res) => {
   try {
-    const tables = await withStudentClient(req.dbNumber, async (c) => {
+    const { value: tables } = await limiter.run({ ticket: crypto.randomUUID() }, () => withStudentClient(req.dbNumber, async (c) => {
       const cols = await c.query(`
         SELECT c.table_name, c.column_name, c.data_type, c.is_nullable, c.ordinal_position,
                EXISTS (SELECT 1 FROM information_schema.table_constraints tc
@@ -146,43 +158,63 @@ app.get("/api/schema", requireDb, async (req, res) => {
         result.push({ name, rows: Number(rows[0].n), columns });
       }
       return result;
-    });
+    }));
     res.json({ tables });
   } catch (e) {
+    if (queueError(e, res)) return;
     res.status(500).json({ error: e.message });
   }
+});
+
+// Queue position/estimate for a query that is waiting (polled by the browser).
+app.get("/api/queue/:ticket", requireDb, (req, res) => {
+  res.json(limiter.status(req.params.ticket));
 });
 
 app.post("/api/query", requireDb, async (req, res) => {
   const sql = req.body?.sql;
   if (typeof sql !== "string" || !sql.trim()) return res.status(400).json({ error: "Empty query." });
-  const started = Date.now();
   try {
-    const out = await withStudentClient(req.dbNumber, async (c) => {
-      const r = await c.query({ text: sql, rowMode: "array" });
-      return Array.isArray(r) ? r : [r];
-    });
-    const results = out.map((r) => ({
-      command: r.command,
-      rowCount: r.rowCount,
-      fields: r.fields.map((f) => f.name),
-      rows: r.rows.slice(0, MAX_ROWS).map((row) =>
-        row.map((v) => (v !== null && typeof v === "object" && !Buffer.isBuffer(v) ? JSON.stringify(v) : Buffer.isBuffer(v) ? `\\x${v.toString("hex")}` : v)),
-      ),
-      truncated: r.rows.length > MAX_ROWS,
-    }));
-    res.json({ results, ms: Date.now() - started });
+    const { value, waitedMs, positionAtEnqueue } = await limiter.run(
+      { key: `q${req.dbNumber}`, ticket: ticketOf(req) },
+      async () => {
+        const started = Date.now();
+        try {
+          const out = await withStudentClient(req.dbNumber, async (c) => {
+            const r = await c.query({ text: sql, rowMode: "array" });
+            return Array.isArray(r) ? r : [r];
+          });
+          const results = out.map((r) => ({
+            command: r.command,
+            rowCount: r.rowCount,
+            fields: r.fields.map((f) => f.name),
+            rows: r.rows.slice(0, MAX_ROWS).map((row) =>
+              row.map((v) => (Buffer.isBuffer(v) ? `\\x${v.toString("hex")}` : v !== null && typeof v === "object" ? JSON.stringify(v) : v)),
+            ),
+            truncated: r.rows.length > MAX_ROWS,
+          }));
+          return { status: 200, body: { results, ms: Date.now() - started } };
+        } catch (e) {
+          return { status: 400, body: { error: e.message, position: e.position ? Number(e.position) : null, ms: Date.now() - started } };
+        }
+      },
+    );
+    // Only mention the queue when the student actually waited.
+    const queue = waitedMs >= 300 ? { waitedMs, positionAtEnqueue } : null;
+    res.status(value.status).json({ ...value.body, queue });
   } catch (e) {
-    res.status(400).json({ error: e.message, position: e.position ? Number(e.position) : null, ms: Date.now() - started });
+    if (queueError(e, res)) return;
+    res.status(500).json({ error: e.message });
   }
 });
 
 // Drop everything in the student's database and reload the sample data.
 app.post("/api/reset", requireDb, async (req, res) => {
   try {
-    await resetDatabase(req.dbNumber);
+    await limiter.run({ key: `q${req.dbNumber}`, ticket: ticketOf(req) }, () => resetDatabase(req.dbNumber));
     res.json({ ok: true });
   } catch (e) {
+    if (queueError(e, res)) return;
     res.status(500).json({ error: e.message });
   }
 });
