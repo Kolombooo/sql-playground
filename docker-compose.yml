@@ -13,10 +13,13 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+    networks:
+      - default
     # The database is NOT published to the host; only the app can reach it.
 
   app:
     build: .
+    container_name: sql-playground
     restart: unless-stopped
     depends_on:
       db:
@@ -32,8 +35,13 @@ services:
       COOKIE_SECRET: ${COOKIE_SECRET:-change-me-secret}
       # Max simultaneous database jobs; extra requests wait in a queue.
       MAX_CONCURRENT: ${MAX_CONCURRENT:-8}
-    ports:
-      - "${PORT:-3000}:3000"
+    networks:
+      - default
+      - proxy_network
 
 volumes:
   pgdata:
+
+networks:
+  proxy_network:
+    external: true
