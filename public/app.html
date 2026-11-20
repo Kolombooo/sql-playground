@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SQL Playground</title>
+  <link rel="stylesheet" href="/tailwind.css" />
+</head>
+<body class="h-screen flex flex-col bg-slate-100 text-slate-800">
+  <header class="bg-slate-900 text-white px-4 py-2 flex items-center gap-4">
+    <h1 class="font-semibold">SQL Playground</h1>
+    <span id="dbname" class="text-sm bg-slate-700 rounded px-2 py-0.5 font-mono"></span>
+    <div class="ml-auto flex items-center gap-2 text-sm">
+      <button id="reset" class="rounded px-3 py-1 bg-slate-700 hover:bg-red-700 transition">Reset database</button>
+      <button id="logout" class="rounded px-3 py-1 bg-slate-700 hover:bg-slate-600 transition">Switch / log out</button>
+    </div>
+  </header>
+
+  <div class="flex flex-1 min-h-0">
+    <aside class="w-72 shrink-0 bg-white border-r border-slate-200 overflow-y-auto p-3">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-500">Structure</h2>
+        <button id="refresh" class="text-xs text-indigo-600 hover:underline">Refresh</button>
+      </div>
+      <div id="schema" class="space-y-2 text-sm"></div>
+    </aside>
+
+    <main class="flex-1 min-w-0 flex flex-col p-4 gap-3">
+      <div class="flex flex-col gap-2">
+        <textarea id="sql" spellcheck="false" rows="8"
+          placeholder="SELECT * FROM employees LIMIT 10;"
+          class="w-full font-mono text-sm rounded-lg border border-slate-300 bg-white p-3 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+        <div class="flex items-center gap-3">
+          <button id="run" class="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium px-5 py-2 transition">Run</button>
+          <span class="text-xs text-slate-500">Ctrl/Cmd + Enter</span>
+          <span id="status" class="text-sm text-slate-500 ml-auto"></span>
+        </div>
+      </div>
+      <div id="output" class="flex-1 min-h-0 overflow-auto space-y-4"></div>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
